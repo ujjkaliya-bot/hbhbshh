@@ -33,8 +33,13 @@ services:
       # https://generativelanguage.googleapis.com/v1beta/openai + gemini-3.5-flash.
       - key: AI_BASE_URL
         value: https://api.kilo.ai/api/openrouter/v1
+      # Main model: used for building/fixing whole projects (quality matters).
       - key: AI_MODEL
         value: kilo-auto/free
+      # Fast model: used for the clarifying questions and the help chat so replies
+      # feel instant. Must be a free/cheap model on the same endpoint.
+      - key: AI_FAST_MODEL
+        value: reflection/beam-free
       - key: WATCHDOG_INTERVAL
         value: "60"
       # Optional: paste the cluster ED25519 private key (raw or base64) so the
