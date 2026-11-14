@@ -1,0 +1,28 @@
+{
+  "servers": [
+    {
+      "server_id": "server1",
+      "ip": "127.0.0.1",
+      "port": 22,
+      "user": "root",
+      "ram_total_mb": 2048,
+      "region": "local"
+    },
+    {
+      "server_id": "server2",
+      "ip": "CHANGE_ME_SERVER2_IP",
+      "port": 22,
+      "user": "root",
+      "ram_total_mb": 2048,
+      "region": "sg"
+    },
+    {
+      "server_id": "server3",
+      "ip": "CHANGE_ME_SERVER3_IP",
+      "port": 22,
+      "user": "root",
+      "ram_total_mb": 2048,
+      "region": "sg"
+    }
+  ]
+}

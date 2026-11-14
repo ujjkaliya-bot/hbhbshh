@@ -1,0 +1,17 @@
+# Secrets & runtime data — never commit
+.env
+private_key.pem
+platform.db
+platform.db-*
+downloads/
+.migrate_*.tar.gz
+# Legacy key path (cluster key lives in /root/.ssh)
+cluster_key
+cluster_key.pub
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
