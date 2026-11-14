@@ -19,20 +19,50 @@ Flat repo layout — all app files live at the repo root (no subdirectory).
 
 ## AI configuration (important)
 `ai_coder_agent.py` talks to **any OpenAI-compatible endpoint** via `AI_BASE_URL`
-+ `AI_MODEL` + `AI_API_KEY`.
++ `AI_MODEL` + `AI_API_KEY`, with an optional second model for speed:
+
+- **`AI_MODEL`** — builds and fixes whole projects (quality matters).
+- **`AI_FAST_MODEL`** — clarifying questions + help chat (latency matters).
+  Falls back to `AI_MODEL` when unset, and `_chat()` auto-falls back to
+  `AI_MODEL` at runtime if the fast model errors out (free models disappear).
 
 - **Kilo (default):** `AI_BASE_URL=https://api.kilo.ai/api/openrouter/v1`,
-  `AI_MODEL=kilo-auto/free`. Key is a long JWT (`eyJ...`).
+  `AI_MODEL=kilo-auto/free`, `AI_FAST_MODEL=reflection/beam-free`. Key is a long
+  JWT (`eyJ...`).
   - `kilocode.ai` redirects (308) and does NOT serve the API — use `api.kilo.ai`.
   - Kilo **rejects `response_format: json_object`** with `400 "This model does not
     support structured output."` The code handles this: `_chat()` detects it,
     permanently disables JSON mode for the process, and retries prompt-only.
     A single `400` followed by `200` in the logs is expected, not a bug.
+  - **Reasoning models are the big trap.** `kilo-auto/free` routes to
+    `stealth/glyph-cluster`, which spends tokens "thinking" before emitting any
+    `content`. With a small `max_tokens` it returns an **empty string** with
+    `finish_reason: length` and `reasoning_tokens` ≈ the whole budget. `_chat()`
+    now detects this (`_empty_reasoning_reply`) and retries with double the
+    budget. Fast free models that are NOT reasoning models: `reflection/beam-free`,
+    `cohere/north-mini-code:free`, `openrouter/free`, `baidu/ernie-5.5-flash-preview:free`
+    (~1.3–2.0s vs ~7s).
 - **Gemini (alternative):** keys start with `AQ.` and only work against
   `https://generativelanguage.googleapis.com/v1beta/openai`.
   Free tier is only **20 requests/day** — easy to exhaust while testing.
 - Key prefix tells you the provider: `AQ.` = Gemini, `eyJ...` = Kilo JWT,
   `sk-...` = OpenAI. A mismatch gives `401` → "invalid or expired key" message.
+
+## Language handling (English / Hindi / Hinglish)
+The bot mirrors whatever language the user writes in.
+
+- `ai_coder_agent.detect_language()` → `"en"`, `"hi"` (Devanagari regex) or
+  `"hinglish"` (≥2 common romanised-Hindi words, or 1 in a ≤3-word message).
+- `reply_language_instruction(lang)` is appended to every system prompt; code,
+  identifiers and file names stay English.
+- `i18n.py` holds every button/message in all three languages
+  (`t("key", lang, **fmt)`). Add a key to all three languages or the table
+  check in the tests will flag it. `t()` falls back to English for unknown
+  languages, so a missing key never crashes the UI.
+- `main.py` keeps the per-user language in the session (`session(uid)["lang"]`)
+  and updates it on **every** incoming message via `note_user_lang()`, so users
+  can switch mid-conversation.
+- Build/clarify/chat calls all take a `lang` argument.
 
 ## AI pipeline gotchas (all already handled in code)
 1. Multi-file projects need a large output budget — `PROJECT_MAX_TOKENS`
