@@ -1078,10 +1078,22 @@ async def _check_poller(app: Application) -> None:
     is deaf. We detect that and self-heal by restarting the updater.
     """
     updater = app.updater
-    if updater is None or updater.running:
+    if updater is None:
+        return
+    # The retry loop can end (task done) while the `running` flag stays True, so
+    # check both before deciding the poller is healthy.
+    task = getattr(updater, "_Updater__polling_task", None)
+    alive = updater.running and (task is None or not task.done())
+    if alive:
         health_server.set_liveness(True)
         return
+
     log.warning("Telegram poller is not running — attempting self-heal")
+    if updater.running:
+        try:
+            await updater.stop()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not stop wedged updater: %s", exc)
     try:
         await updater.start_polling(
             allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
