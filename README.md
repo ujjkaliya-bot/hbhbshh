@@ -7,7 +7,7 @@ SSH. Users chat in plain Hindi/English to:
 - ✨ **Build brand-new Python/Node.js bots from scratch using AI** (Kilo-style).
 - 📦 **Upload existing `.zip` bots** and host them 24/7.
 - 🩺 **Auto-diagnose, edit and fix crashed bots** with AI (multi-file patches).
-- 💬 **Get 24/7 AI coding & hosting help** in Hinglish.
+- 💬 **Get 24/7 AI coding & hosting help** in clear English.
 
 Admins can inspect the cluster, add servers, show the cluster SSH public key,
 migrate all bots between servers with **zero downtime**, and manage quotas.
@@ -22,32 +22,17 @@ Runs anywhere: **Render.com** (free web service + UptimeRobot keep-alive) or a
 1. Push this repo to GitHub.
 2. Render Dashboard → **New → Blueprint** → pick the repo (uses `render.yaml`),
    **or** New → **Web Service** with:
-   - Build: `pip install -r kilo-host-agent/requirements.txt`
-   - Start: `python kilo-host-agent/main.py`
+   - Build: `pip install -r requirements.txt`
+   - Start: `python main.py`
    - Health check path: `/`
 3. Add env vars in the Render dashboard: `TELEGRAM_BOT_TOKEN`, `ADMIN_USER_ID`,
    `AI_API_KEY` (and optionally `CLUSTER_PRIVATE_KEY` — see below).
-   `AI_BASE_URL` / `AI_MODEL` already default to Kilo in `render.yaml`.
+   `AI_BASE_URL` / `AI_MODEL` are set in `render.yaml` (Gemini by default; switch
+   to Kilo/OpenAI by editing those two values).
 4. Deploy. Open `https://<your-service>.onrender.com/` → you should see
    `Kilo Host Agent is running ✅` (that's the health endpoint).
 5. Create a free **UptimeRobot** HTTP(s) monitor hitting that URL every 5 min so
    the free instance never sleeps.
-
-**Stable download URL (bonus):** the running service also serves the deploy
-artifacts, so you get a permanent installer link with no tunnels:
-
-```
-https://<your-service>.onrender.com/install_247.sh            # Selfhost installer
-https://<your-service>.onrender.com/kilo-host-agent.zip       # sources (kilo-host-agent/)
-https://<your-service>.onrender.com/kilo-host-agent-deploy.zip  # repo-root ZIP for Render
-```
-
-**No-Render-account-free way (upload a ZIP instead of using git):**
-
-1. Download `kilo-host-agent-deploy.zip` (it already contains `render.yaml`,
-   `Procfile` and `kilo-host-agent/` at the repo root, with **no secrets**).
-2. On GitHub: your repo → **Add file → Upload files** → drag the ZIP's contents
-   in → **Commit**.
 3. Render → **New → Blueprint** → pick that repo → it reads `render.yaml`
    automatically.
 4. Add the three env vars and hit **Deploy**.
@@ -64,26 +49,19 @@ https://<your-service>.onrender.com/kilo-host-agent-deploy.zip  # repo-root ZIP 
 
 Two ways, both one-command:
 
-**B1. Self-extracting installer** (needs `curl`):
+**Clone the repo onto the server, then run the installer:**
 
 ```bash
-curl -fsSL https://work-1-jxdijlsskrlmafta.prod-runtime.all-hands.dev/install_247.sh | bash
-```
-
-**B2. ZIP** (if you prefer to upload the file yourself):
-
-```bash
-# upload kilo-host-agent.zip to the server, then:
-unzip kilo-host-agent.zip && cd kilo-host-agent
+git clone <your-repo-url> kilo-host-agent && cd kilo-host-agent
 bash install_from_zip.sh        # installs deps + systemd unit
 ```
 
-Both write `/opt/kilo-host-agent/.env`, generate `/root/.ssh/cluster_key`, and
-enable the `kilo-host-agent.service` unit (24/7 + reboot autostart).
+This writes `/opt/kilo-host-agent/.env`, generates `/root/.ssh/cluster_key`, and
+enables the `kilo-host-agent.service` unit (24/7 + reboot autostart).
 
 ---
 
-## 📁 Project Structure (`kilo-host-agent/`)
+## 📁 Project Structure (flat repo — all files at the root)
 
 | File | Role |
 |------|------|
@@ -98,22 +76,21 @@ enable the `kilo-host-agent.service` unit (24/7 + reboot autostart).
 | `.env` | Secrets: `TELEGRAM_BOT_TOKEN`, `ADMIN_USER_ID`, `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL`. |
 | `requirements.txt` | Dependencies. |
 
-Repo-root deploy files: `render.yaml` (Render blueprint), `Procfile`,
-`install_247.sh` (self-extracting installer), `kilo-host-agent.zip` (ZIP bundle),
-`build_install.py` (regenerates both artifacts).
+Deploy files: `render.yaml` (Render blueprint) and `Procfile`.
+`install_from_zip.sh` installs the agent on a Selfhost box as a systemd service.
 
 ---
 
 ## 🎛 Telegram Commands & Buttons
 
 ### User dashboard (`/start`)
-- **✨ AI se Naya Bot Banwao** — describe a bot in Hindi/English → AI writes all
-  files → `security_scanner` verifies → auto-deploys 24/7 on the cluster.
-- **📦 ZIP Upload karke Host Karo** — send a `.zip` → auto-extract, install deps,
-  run 24/7.
-- **📂 Mere Bots & Live Logs** — start, stop, restart, view logs, delete.
-- **🩺 AI Auto-Fix (Error Theek Karo)** — reads crash logs + code, patches the
-  bug automatically, restarts the bot.
+- **✨ Build a New Bot with AI** — describe your idea in any language → the AI
+  restates it in English, asks a few quick questions, then writes all files →
+  `security_scanner` verifies them → auto-deploys 24/7 on the cluster.
+- **📦 Host a ZIP Upload** — send a `.zip` → auto-extract, install deps, run 24/7.
+- **📂 My Bots & Live Logs** — start, stop, restart, view logs, delete.
+- **🩺 AI Auto-Fix (Repair Errors)** — reads crash logs + code, patches the bug
+  automatically, restarts the bot.
 - **💬 24/7 AI Coding Help** — chat with the agent for code edits or help.
 
 ### Admin (`ADMIN_USER_ID` only)
@@ -140,7 +117,7 @@ Repo-root deploy files: `render.yaml` (Render blueprint), `Procfile`,
 ## 🛠 Troubleshooting
 | Symptom | Fix |
 |---------|-----|
-| `AI Support abhi configure nahi hai` | Set `AI_API_KEY` in `.env`, `systemctl restart kilo-host-agent`. |
+| `AI is not configured yet` | Set `AI_API_KEY` (and `AI_BASE_URL`) and redeploy the service. |
 | `Permission denied (publickey)` on a server | Copy the output of `/pubkey` into that server's `SSH Keys` settings. |
 | `No healthy server with >= 400MB free RAM` | Add/verify a server; check `/cluster`. |
 | Bot deploys but `STOPPED` | Open 📊 Logs → 🩺 AI Auto-Fix. |

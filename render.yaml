@@ -28,10 +28,13 @@ services:
         sync: false
       - key: AI_API_KEY
         sync: false
+      # Any OpenAI-compatible endpoint works. Defaults below are for Google
+      # Gemini (keys start with "AQ."). For Kilo use
+      # https://api.kilo.ai/api/openrouter/v1 + kilo-auto/free.
       - key: AI_BASE_URL
-        value: https://api.kilo.ai/api/openrouter/v1
+        value: https://generativelanguage.googleapis.com/v1beta/openai
       - key: AI_MODEL
-        value: kilo-auto/free
+        value: gemini-3.5-flash
       - key: WATCHDOG_INTERVAL
         value: "60"
       # Optional: paste the cluster ED25519 private key (raw or base64) so the

@@ -16,7 +16,7 @@ The agent exposes three high-level capabilities used by the Telegram bot:
 * ``fix_code(log_tail, files, language)`` — read a crash log + the current
   sources and return rewritten file(s) that fix the bug.
 * ``answer(question, history)`` — general 24/7 coding/hosting help in
-  simple Hinglish.
+  clear, simple English.
 
 All generated/patch files are returned as a plain ``{path: contents}`` map so
 the caller can run them through ``security_scanner`` before anything executes.
@@ -26,9 +26,13 @@ The module is import-safe with no network access at import time.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+import time
 from typing import Optional
+
+log = logging.getLogger("kilo-host-agent.ai")
 
 try:  # The SDK is optional at import time so the bot can start without AI.
     from openai import OpenAI
@@ -44,8 +48,18 @@ AI_BASE_URL = os.environ.get("AI_BASE_URL", "https://api.openai.com/v1").strip()
 AI_MODEL = os.environ.get("AI_MODEL", "gpt-4o-mini").strip()
 
 MAX_PROJECT_FILES = 25
-MAX_FILE_CHARS = 20000
-REQUEST_TIMEOUT = 120
+MAX_FILE_CHARS = 40000
+REQUEST_TIMEOUT = 180
+# Multi-file projects need a generous output budget or the JSON gets truncated
+# mid-file and can no longer be parsed.
+PROJECT_MAX_TOKENS = int(os.environ.get("AI_MAX_TOKENS", "16000"))
+CLARIFY_MAX_TOKENS = 900
+FIX_MAX_TOKENS = 16000
+
+# Transient provider errors (rate limits, overload) are retried with backoff.
+_RETRIES = int(os.environ.get("AI_RETRIES", "2"))
+_RETRY_BACKOFF = float(os.environ.get("AI_RETRY_BACKOFF", "3"))
+
 
 # Some OpenAI-compatible gateways (e.g. Kilo/OpenRouter free routing) reject the
 # `response_format` field. We try it once, then permanently fall back to prompt
@@ -57,50 +71,89 @@ _json_mode_supported = True
 # Prompts
 # --------------------------------------------------------------------------- #
 PROJECT_SYSTEM_PROMPT = """\
-You are "Kilo", a senior full-stack engineer that writes COMPLETE, runnable
-Telegram/automation bots. You NEVER use placeholders or TODOs — every file is
-production-ready.
+You are "Kilo", a principal-level full-stack engineer who ships COMPLETE,
+production-grade Telegram and automation bots. Your output is always runnable
+as-is: no placeholders, no TODOs, no "your_token_here" stubs, no ellipses.
 
-When asked to build a bot, reply with ONLY a JSON object (no prose outside it):
+Reply with ONLY a single JSON object — no prose and no markdown fences around it:
 {
   "language": "python" | "node",
-  "summary": "<one line, in Hinglish, of what you built>",
-  "entrypoint": "<the main file to run, e.g. main.py or index.js>",
+  "summary": "<one clear English sentence describing what you built>",
+  "entrypoint": "<main file to run, e.g. main.py or index.js>",
   "files": { "<relative/path>": "<full file contents>", ... },
-  "run_command": "<command to start it, e.g. python main.py>"
+  "run_command": "<command that starts it, e.g. python main.py>"
+}
+
+Quality bar — aim for a polished, senior-engineer result:
+- Complete, coherent multi-file projects. Split concerns into modules when it
+  improves clarity instead of dumping everything into one giant file.
+- Robust error handling: catch and log failures, never crash silently, and shut
+  down gracefully. Retry transient network operations where it matters.
+- Structured logging to stdout/stderr with timestamps.
+- Clear, minimal comments that explain intent (not line-by-line narration).
+- Modern async Python (python-telegram-bot v20+ style) or idiomatic Node.js.
+- Read every secret from environment variables; never hard-code tokens.
+- Python: always include requirements.txt (with >= version bounds).
+  Node: always include package.json with a "start" script and correct deps.
+- Always include a short README.md documenting setup, required env vars and how
+  to run. Include a .env.example listing the env vars (with dummy values).
+- Keep dependencies minimal and widely available on PyPI/npm.
+- The bot must run unattended 24/7 and degrade gracefully on network errors.
+
+Safety:
+- Never emit shell commands that delete files, format disks or reboot hosts.
+- Never exfiltrate secrets or call unknown third-party endpoints.
+"""
+
+CLARIFY_SYSTEM_PROMPT = """\
+You are "Kilo", a friendly senior engineer who helps the user design their bot
+BEFORE any code is written. The user describes an idea — often in mixed
+Hindi/English or another language. Your job is to (1) restate the whole idea
+back in clear, simple ENGLISH so you both agree on it, and (2) ask exactly ONE
+focused follow-up question at a time until you have enough detail to build a
+great bot.
+
+Reply with ONLY a JSON object:
+{
+  "understood": "<a clear English restatement of everything agreed so far, 2-5 sentences>",
+  "question": "<exactly ONE short, specific question to ask next, or null if ready>",
+  "ready": true | false
 }
 
 Rules:
-- Python bots: include `requirements.txt`. The bot MUST read its token from the
-  TELEGRAM_BOT_TOKEN environment variable (never hard-code secrets).
-- Node bots: include `package.json` with a `start` script and correct deps.
-- Keep dependencies minimal and widely available on PyPI/npm.
-- The code must run unattended 24/7 and log errors to stdout/stderr.
-- Never emit shell commands that delete files, format disks, or reboot hosts.
+- ALWAYS write in English, even if the user wrote in another language.
+- Restate the full picture every time, folding in the user's latest answer.
+- Ask only ONE question per turn. Prioritise the most important unknowns first:
+  what the bot does, its commands/features, storage or database needs, external
+  APIs it talks to, admin controls, and any scheduling.
+- Set "ready": true once you have enough to build a solid bot, or if the user
+  says to go ahead / build now / no more questions. Then set "question": null.
+- Never ask about programming language or secret tokens (the app handles those).
+- Never ask more than 6 questions in total.
 """
 
 FIX_SYSTEM_PROMPT = """\
 You are "Kilo", an expert debugger. You are given a bot's crash log and its
-source files. Identify the root cause and produce a MINIMAL fix.
+source files. Identify the root cause and produce a MINIMAL, correct fix.
 
 Reply with ONLY a JSON object:
 {
-  "explanation": "<root cause + fix, in simple Hinglish, 1-3 sentences>",
+  "explanation": "<root cause + fix, in clear English, 1-3 sentences>",
   "files": { "<path to change>": "<full NEW contents of that file>" }
 }
 
 Rules:
 - Only include files you actually changed.
-- Return the COMPLETE new file contents, not a diff.
-- If the fix is a dependency, update requirements.txt / package.json instead.
+- Return the COMPLETE new file contents, never a diff.
+- If the real fix is a dependency, update requirements.txt / package.json.
+- Keep the surrounding style, logging and error handling intact.
 - Never introduce shell commands that delete files, format disks or reboot.
 """
 
 HELP_SYSTEM_PROMPT = """\
-You are "Kilo", a friendly 24/7 AI coding & bot-hosting assistant for Indian
-users. Answer in simple Hinglish (Hindi in Roman script mixed with English
-technical terms). Be concise, practical and friendly. When you show code, use
-short fenced blocks. If the user asks to build or fix a bot, tell them to use
+You are "Kilo", a friendly 24/7 AI coding & bot-hosting assistant. Answer in
+clear, simple English. Be concise, practical and friendly. When you show code,
+use short fenced blocks. If the user wants to build or fix a bot, point them to
 the dashboard buttons.
 """
 
@@ -122,10 +175,9 @@ def is_configured() -> bool:
 
 def not_configured_message() -> str:
     return (
-        "⚠️ *AI Support abhi configure nahi hai.*\n"
-        "Server ke `/opt/kilo-host-agent/.env` me `AI_API_KEY` (aur zarurat ho to "
-        "`AI_BASE_URL`) daalein, phir service restart karein:\n"
-        "`systemctl restart kilo-host-agent`"
+        "⚠️ *AI is not configured yet.*\n"
+        "Set the `AI_API_KEY` environment variable (and `AI_BASE_URL` if you use a "
+        "custom endpoint), then redeploy the service."
     )
 
 
@@ -151,65 +203,155 @@ def _chat(messages: list[dict], max_tokens: int = 4000, temperature: float = 0.2
     use_json = json_mode and _json_mode_supported
     if use_json:
         kwargs["response_format"] = {"type": "json_object"}
-    try:
-        resp = client.chat.completions.create(**kwargs)
-    except Exception as exc:  # noqa: BLE001
-        if use_json:
-            # Gateway/model rejects structured output — disable it for good and
-            # retry relying on the prompt's "reply with ONLY JSON" instruction.
-            _json_mode_supported = False
-            kwargs.pop("response_format", None)
-            try:
-                resp = client.chat.completions.create(**kwargs)
-            except Exception as exc2:  # noqa: BLE001
-                raise AICoderError(_friendly_ai_error(exc2)) from exc2
-        else:
+
+    resp = None
+    last_exc: Optional[Exception] = None
+    for attempt in range(_RETRIES + 1):
+        try:
+            resp = client.chat.completions.create(**kwargs)
+            break
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if use_json and _is_json_unsupported(exc):
+                # Gateway/model rejects structured output — disable it for good
+                # and retry relying on the prompt's "reply with ONLY JSON" hint.
+                _json_mode_supported = False
+                use_json = False
+                kwargs.pop("response_format", None)
+                continue
+            if _is_transient(exc) and attempt < _RETRIES:
+                delay = _RETRY_BACKOFF * (attempt + 1)
+                log.warning("transient AI error (%s); retrying in %.1fs",
+                            type(exc).__name__, delay)
+                time.sleep(delay)
+                continue
             raise AICoderError(_friendly_ai_error(exc)) from exc
+
+    if resp is None:
+        raise AICoderError(_friendly_ai_error(last_exc or RuntimeError("no response")))
     if not resp.choices:
         return ""
-    return (resp.choices[0].message.content or "").strip()
+    choice = resp.choices[0]
+    content = (choice.message.content or "").strip()
+    if getattr(choice, "finish_reason", None) == "length":
+        log.warning("AI response hit the token limit (max_tokens=%s); output truncated.",
+                    max_tokens)
+    return content
+
+
+def _is_json_unsupported(exc: Exception) -> bool:
+    low = str(exc).lower()
+    return ("response_format" in low or "json_object" in low or "json mode" in low
+            or "structured" in low) and not _is_transient(exc)
+
+
+def _is_transient(exc: Exception) -> bool:
+    """True for errors worth retrying (rate limits, overload, gateway hiccups)."""
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    if status in (429, 500, 502, 503, 504):
+        return True
+    low = str(exc).lower()
+    return any(s in low for s in (
+        "rate limit", "429", "high demand", "unavailable", "503",
+        "timeout", "timed out", "connection", "overloaded"))
+
+
 
 
 def _friendly_ai_error(exc: Exception) -> str:
-    """Turn SDK/HTTP errors into an actionable Hinglish message."""
+    """Turn SDK/HTTP errors into an actionable English message."""
     text = str(exc)
     low = text.lower()
     if "credits required" in low or "paid model" in low or "402" in low:
-        return ("AI account me credits nahi hain. Kilo par free model use karein "
-                "(AI_MODEL=kilo-auto/free) ya https://app.kilo.ai/profile par "
-                "credits add karein.")
-    if "authentication" in low or "invalid_token" in low or "401" in low:
-        return "AI_API_KEY galat/expired hai. .env me nayi key daal kar service restart karein."
+        return ("Your AI account has no credits. Use a free model "
+                "(e.g. AI_MODEL=kilo-auto/free) or add credits to your provider.")
+    if "authentication" in low or "invalid_token" in low or "invalid token" in low \
+            or "401" in low:
+        return ("The AI_API_KEY is invalid or expired, or it does not match the "
+                "configured AI_BASE_URL. Set a valid key (with a matching "
+                "AI_BASE_URL) and redeploy.")
+    if "model" in low and ("not found" in low or "no longer available" in low
+                           or "404" in low):
+        return ("The configured AI_MODEL is not available on this endpoint. Pick a "
+                "supported model and redeploy.")
     if "rate limit" in low or "429" in low:
-        return "AI rate limit hit ho gaya — thodi der baad dobara try karein."
+        return "The AI provider is rate-limiting us — please try again in a moment."
+    if "high demand" in low or "unavailable" in low or "503" in low:
+        return "The AI model is temporarily overloaded — please try again shortly."
     return f"AI request failed: {text[:300]}"
 
 
 # --------------------------------------------------------------------------- #
 # JSON extraction (robust to fences / stray prose)
 # --------------------------------------------------------------------------- #
+def _loads(text: str) -> Optional[dict]:
+    """json.loads that tolerates the control characters models leave in strings."""
+    try:
+        val = json.loads(text, strict=False)
+        return val if isinstance(val, dict) else None
+    except json.JSONDecodeError:
+        return None
+
+
 def extract_json(text: str) -> Optional[dict]:
-    """Pull the first JSON object out of a model reply."""
+    """Pull the first JSON object out of a model reply.
+
+    Tries, in order: the whole reply, a leading/trailing ```json fence, then the
+    outermost ``{...}`` block. Models often embed literal newlines inside string
+    values (e.g. file contents), which strict JSON rejects — hence
+    ``strict=False``. Order matters: a naive fence regex can match a code block
+    *inside* a generated README, so the raw text is tried first.
+    """
     if not text:
         return None
     text = text.strip()
-    # Strip ```json ... ``` fences.
-    fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
+
+    data = _loads(text)
+    if data is not None:
+        return data
+
+    # ```json ... ``` fence wrapping the whole reply.
+    fence = re.match(r"```(?:json)?\s*(.*?)```\s*$", text, re.S)
     if fence:
-        text = fence.group(1).strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-    # Fall back to the outermost {...} block.
+        data = _loads(fence.group(1).strip())
+        if data is not None:
+            return data
+
+    # Outermost {...} block.
     start = text.find("{")
     end = text.rfind("}")
     if start != -1 and end > start:
-        try:
-            return json.loads(text[start:end + 1])
-        except json.JSONDecodeError:
-            return None
+        return _loads(text[start:end + 1])
     return None
+
+
+
+
+def _chat_json(messages: list[dict], max_tokens: int = PROJECT_MAX_TOKENS,
+               temperature: float = 0.2, retries: int = 1) -> Optional[dict]:
+    """Chat expecting a JSON object, retrying once if the reply is unusable.
+
+    Multi-file generations can be cut off when the provider caps output length;
+    on failure we feed the partial reply back and ask for a complete, more
+    concise JSON object.
+    """
+    last = ""
+    for attempt in range(retries + 1):
+        last = _chat(messages, max_tokens=max_tokens, temperature=temperature)
+        data = extract_json(last)
+        if data is not None:
+            return data
+        if attempt < retries:
+            log.warning("AI reply was not valid JSON (len=%d); retrying.", len(last))
+            messages = messages + [
+                {"role": "assistant", "content": last},
+                {"role": "user", "content":
+                    "Your previous reply was cut off or was not valid JSON. Reply "
+                    "again with ONLY one complete JSON object and no prose. Keep each "
+                    "file concise so the whole object fits in the response."},
+            ]
+    return None
+
 
 
 def _sanitize_files(raw: object) -> dict[str, str]:
@@ -232,6 +374,48 @@ def _sanitize_files(raw: object) -> dict[str, str]:
 # --------------------------------------------------------------------------- #
 # Public capabilities
 # --------------------------------------------------------------------------- #
+def clarify_bot(idea: str, answers: Optional[list[dict]] = None,
+                max_questions: int = 6) -> dict:
+    """
+    Restate the user's idea in clear English and ask ONE follow-up question.
+
+    ``answers`` is the running transcript: ``[{"q": ..., "a": ...}, ...]``.
+    Returns ``{"ok", "understood", "question", "ready"}`` or ``{"ok": False,
+    "error"}``. When ``ready`` is true, ``question`` is ``None``.
+    """
+    if not is_configured():
+        return {"ok": False, "error": not_configured_message()}
+
+    lines = [f"Original idea:\n{idea.strip()}"]
+    if answers:
+        lines.append("\nAnswers so far:")
+        for i, turn in enumerate(answers, 1):
+            lines.append(f"{i}. Q: {turn.get('q', '').strip()}\n   A: {turn.get('a', '').strip()}")
+    lines.append(f"\nQuestions asked so far: {len(answers or [])} of {max_questions}.")
+    if answers and len(answers) >= max_questions:
+        lines.append("You have reached the maximum number of questions — set "
+                     '"ready": true now and "question": null.')
+
+    messages = [
+        {"role": "system", "content": CLARIFY_SYSTEM_PROMPT},
+        {"role": "user", "content": "\n".join(lines)},
+    ]
+    data = _chat_json(messages, max_tokens=CLARIFY_MAX_TOKENS, temperature=0.3)
+    if not data:
+        return {"ok": False, "error": "AI did not return a valid response. Please try again."}
+
+    ready = bool(data.get("ready"))
+    question = data.get("question")
+    if not isinstance(question, str) or not question.strip():
+        question = None
+        ready = True
+    if answers and len(answers) >= max_questions:
+        ready = True
+        question = None
+    understood = (data.get("understood") or "").strip() or "Got it."
+    return {"ok": True, "understood": understood, "question": question, "ready": ready}
+
+
 def generate_project(prompt: str, language: Optional[str] = None) -> dict:
     """
     Build a complete bot project from a natural-language prompt.
@@ -247,14 +431,13 @@ def generate_project(prompt: str, language: Optional[str] = None) -> dict:
         {"role": "system", "content": PROJECT_SYSTEM_PROMPT},
         {"role": "user", "content": f"Build this bot:\n{prompt}{hint}"},
     ]
-    text = _chat(messages, max_tokens=4000)
-    data = extract_json(text)
+    data = _chat_json(messages, max_tokens=PROJECT_MAX_TOKENS)
     if not data:
-        return {"ok": False, "error": "AI ne valid project JSON nahi diya. Dobara try karein."}
+        return {"ok": False, "error": "The AI did not return a valid project. Please try again."}
 
     files = _sanitize_files(data.get("files"))
     if not files:
-        return {"ok": False, "error": "AI ne koi file generate nahi ki. Prompt thoda saaf likhein."}
+        return {"ok": False, "error": "The AI did not generate any files. Try describing the bot in more detail."}
 
     lang = data.get("language") if data.get("language") in ("python", "node") else (language or "python")
     entrypoint = data.get("entrypoint") or ("main.py" if lang == "python" else "index.js")
@@ -272,7 +455,7 @@ def generate_project(prompt: str, language: Optional[str] = None) -> dict:
     return {
         "ok": True,
         "language": lang,
-        "summary": data.get("summary") or "Bot generate ho gaya.",
+        "summary": data.get("summary") or "Your bot is ready.",
         "entrypoint": entrypoint,
         "files": files,
         "run_command": data.get("run_command") or (
@@ -301,17 +484,16 @@ def fix_code(log_tail: str, files: dict[str, str], language: str = "python") -> 
             f"Language: {language}\n\nCrash log:\n```\n{log_tail[-6000:]}\n```\n\n"
             f"Source files:\n{source_blob}"},
     ]
-    text = _chat(messages, max_tokens=4000)
-    data = extract_json(text)
+    data = _chat_json(messages, max_tokens=FIX_MAX_TOKENS)
     if not data:
-        return {"ok": False, "error": "AI ne valid fix JSON nahi diya."}
+        return {"ok": False, "error": "The AI did not return a valid fix. Please try again."}
 
     patched = _sanitize_files(data.get("files"))
     if not patched:
-        return {"ok": False, "error": "AI ne koi patched file nahi di."}
+        return {"ok": False, "error": "The AI did not produce any patched files."}
     return {
         "ok": True,
-        "explanation": data.get("explanation") or "Bug fix apply kiya gaya.",
+        "explanation": data.get("explanation") or "Applied a bug fix.",
         "files": patched,
     }
 
@@ -331,7 +513,7 @@ def edit_file(filename: str, current: str, instruction: str,
     ]
     text = _chat(messages, max_tokens=4000, json_mode=False)
     if not text:
-        return {"ok": False, "error": "AI ne khaali reply diya."}
+        return {"ok": False, "error": "The AI returned an empty reply."}
     fence = re.search(r"```(?:[\w]+)?\s*(.*?)```", text, re.S)
     if fence:
         text = fence.group(1).strip()
