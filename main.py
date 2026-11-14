@@ -1069,11 +1069,35 @@ async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 # --------------------------------------------------------------------------- #
 # Watchdog background loop
 # --------------------------------------------------------------------------- #
+async def _check_poller(app: Application) -> None:
+    """Keep Telegram polling alive.
+
+    A single ``Conflict`` (two pollers during a deploy, or a stray script hitting
+    ``getUpdates``) makes python-telegram-bot abort its retry loop while the
+    process — and the HTTP health port — stay up. The bot then looks healthy but
+    is deaf. We detect that and self-heal by restarting the updater.
+    """
+    updater = app.updater
+    if updater is None or updater.running:
+        health_server.set_liveness(True)
+        return
+    log.warning("Telegram poller is not running — attempting self-heal")
+    try:
+        await updater.start_polling(
+            allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+        health_server.set_liveness(True)
+        log.info("Telegram poller restarted ✅")
+    except Exception as exc:  # noqa: BLE001
+        log.error("poller self-heal failed: %s", exc)
+        health_server.set_liveness(False)
+
+
 async def watchdog_loop(app: Application) -> None:
     log.info("watchdog started (interval=%ss)", WATCHDOG_INTERVAL)
     while True:
         try:
             await asyncio.sleep(WATCHDOG_INTERVAL)
+            await _check_poller(app)
             events = await asyncio.to_thread(cm.watchdog_scan)
             for ev in events:
                 if ev.get("status") not in ("restarted", "crashed"):
@@ -1110,7 +1134,23 @@ async def watchdog_loop(app: Application) -> None:
             log.exception("watchdog error: %s", exc)
 
 
+async def _on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Global error handler.
+
+    python-telegram-bot logs unhandled errors and, for a *fatal* one such as
+    ``Conflict`` (two pollers), stops the updater for good. A registered
+    handler keeps the process alive so the watchdog can recover the poller
+    instead of leaving a silently dead 24/7 bot behind a healthy HTTP port.
+    """
+    exc = getattr(context, "error", None)
+    if isinstance(exc, (TelegramError, asyncio.CancelledError)):
+        log.warning("handler error (kept alive): %r", exc)
+    else:
+        log.exception("handler error: %s", exc)
+
+
 async def _post_init(app: Application) -> None:
+    health_server.set_liveness(True)
     app.bot_data["watchdog"] = asyncio.create_task(watchdog_loop(app))
     # Keep the Render web service (and UptimeRobot) happy with a live HTTP port.
     try:
@@ -1194,13 +1234,20 @@ def build_app() -> Application:
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.Document.ALL, on_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
+    app.add_error_handler(_on_error)
     return app
 
 
 def main() -> None:
     app = build_app()
     log.info("🚀 Kilo Host Agent starting…")
-    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    # bootstrap_retries lets a new instance survive the brief "Conflict" window
+    # while Render is still shutting the previous instance down during a deploy.
+    app.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,
+        bootstrap_retries=5,
+    )
 
 
 if __name__ == "__main__":

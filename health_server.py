@@ -35,6 +35,9 @@ _APP_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_DIR = os.path.dirname(_APP_DIR)
 _STATIC = ("install_247.sh", "kilo-host-agent.zip", "kilo-host-agent-deploy.zip")
 
+# Shared with the bot: False once Telegram polling has died for good.
+_LIVENESS: dict[str, bool] = {"alive": True}
+
 
 def _port() -> int:
     try:
@@ -52,11 +55,24 @@ def _find_static(name: str) -> str | None:
 
 
 async def _root(_request):
+    # Render's healthCheckPath is "/". Report process liveness here; a wedged
+    # event loop simply fails to answer, which Render already treats as down.
     return web.Response(text="Kilo Host Agent is running ✅\n", status=200)
 
 
 async def _health(_request):
-    return web.json_response({"status": "ok", "service": "kilo-host-agent"})
+    # Observability only: always 200 so a brief deploy-time overlap (two
+    # instances polling for a moment) never triggers a restart loop.
+    return web.json_response({
+        "status": "ok",
+        "service": "kilo-host-agent",
+        "telegram_polling": bool(_LIVENESS.get("alive", True)),
+    })
+
+
+def set_liveness(alive: bool) -> None:
+    """Called by the bot to advertise whether Telegram polling is healthy."""
+    _LIVENESS["alive"] = bool(alive)
 
 
 def _make_static(name: str):

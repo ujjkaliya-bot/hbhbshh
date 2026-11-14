@@ -48,6 +48,25 @@ Flat repo layout — all app files live at the repo root (no subdirectory).
 - Key prefix tells you the provider: `AQ.` = Gemini, `eyJ...` = Kilo JWT,
   `sk-...` = OpenAI. A mismatch gives `401` → "invalid or expired key" message.
 
+## 24/7 resilience (deploy overlap + deaf-poller bug)
+`python-telegram-bot` aborts its polling retry loop on a *fatal* error and logs
+`No error handlers are registered, logging exception.` The process (and the HTTP
+health port) stay up, so the bot looks alive but is **deaf** — a silent 24/7
+outage. Two guards are in place:
+
+- `_on_error` is registered via `app.add_error_handler`, so handler exceptions
+  are logged instead of killing the run.
+- `_check_poller()` runs every watchdog tick: if `app.updater.running` is False
+  it calls `updater.start_polling()` again (self-heal) and flips
+  `health_server.set_liveness()`.
+- `run_polling(bootstrap_retries=5)` lets a new instance survive the short
+  `Conflict: terminated by other getUpdates request` window while Render is
+  still shutting the old instance down during a deploy. Every deploy logs a few
+  of these lines — that is normal, not a bug.
+- **Never call Telegram `getUpdates` by hand to "check if the bot is alive".**
+  Your own request becomes the "other getUpdates" and kills the bot's poller.
+  Use `/health` (`telegram_polling: true/false`) instead.
+
 ## Language handling (English / Hindi / Hinglish)
 The bot mirrors whatever language the user writes in.
 
