@@ -1,0 +1,41 @@
+# render.yaml — deploy the Kilo Host Agent as a 24/7 Render web service.
+#
+# This variant is for a FLAT repository layout (all app files at the repo root,
+# e.g. main.py, health_server.py, requirements.txt are siblings of this file).
+#
+#  1. Commit this file + Procfile at the repo root.
+#  2. Render Dashboard -> New -> Blueprint -> pick this repo.
+#  3. Fill the `sync: false` secrets below (they are NOT stored in git).
+#  4. (Optional) Point UptimeRobot at  https://<your-service>.onrender.com/  to
+#     keep the free instance awake.
+services:
+  - type: web
+    name: kilo-host-agent
+    runtime: python
+    plan: free
+    region: singapore
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    healthCheckPath: /
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false          # set in the Render dashboard
+      - key: ADMIN_USER_ID
+        sync: false
+      - key: AI_API_KEY
+        sync: false
+      - key: AI_BASE_URL
+        value: https://api.kilo.ai/api/openrouter/v1
+      - key: AI_MODEL
+        value: kilo-auto/free
+      - key: WATCHDOG_INTERVAL
+        value: "60"
+      # Optional: paste the cluster ED25519 private key (raw or base64) so the
+      # bot can SSH into your Selfhost servers from Render. Leave unset to let
+      # the bot generate a fresh key (then read it via /pubkey).
+      - key: CLUSTER_PRIVATE_KEY
+        sync: false
