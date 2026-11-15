@@ -119,6 +119,37 @@ dependency or to guess what a bot is doing:
 State: `S_AWAITING_PKGS` + `session()["pkg_bot"]`; `_clear_transient_state()`
 drops it when the user taps ⬅️ Back so a stray message is not eaten by the flow.
 
+Both buttons are on the **main menu** (`main_menu_kb`) as well as in the bot
+detail view — users were tapping 📦 Packages on the home screen and seeing
+nothing, because it used to live only inside 📂 My Bots.
+
+## Ephemeral DB on Render → bot recovery
+Render's free plan has **no persistent disk**, so `platform.db` (SQLite) is
+wiped on every deploy. That used to silently lose the whole `hosted_bots`
+table even though every bot kept running on its Selfhost box.
+
+`ClusterManager.recover_bots()` fixes this deterministically (no AI):
+* `discover_bots()` walks `REMOTE_ROOT` (`/root/hosted_bots`) on each **active**
+  server, two levels deep — every `<owner_id>/<bot_id>` dir is a live bot.
+* `_detect_language()` reads the directory listing to pick `python`/`node`.
+* `recover_bots()` calls `db.ensure_user(owner_id)` first (the `users` table was
+  wiped too, and `hosted_bots.owner_id` is a FK to it), then `db.add_bot(...)`.
+  Existing DB rows win, so it is idempotent and never duplicates.
+* Hooked into `_post_init` right after `reload_from_json`.
+
+⚠️ Because the SSH key also lives on ephemeral storage, set
+`CLUSTER_PRIVATE_KEY` (see `.env.example`) or the cluster key changes on every
+deploy and the Selfhost boxes will reject the connection. Recovery needs at
+least one reachable server — `servers.json` ships with `server1 = 127.0.0.1`
+which is unreachable from Render, so add your real Selfhost IP with
+`/addserver` or in `servers.json`.
+
+## Fixed: `add_bot` swapped `status` / `remote_path`
+`database.add_bot` listed the columns as `(..., status, remote_path)` but bound
+the values as `(..., remote_path, status)`. Every new bot was therefore stored
+with `remote_path == 'deploying'`, which broke logs, packages and restart. The
+value tuple now matches the column order.
+
 ## Bot flow ("Build a New Bot with AI")
 `main.py` session state machine: `awaiting_ai_prompt` → `clarifying` (one
 question per turn via `ai_coder_agent.clarify_bot()`) → `confirm_build` →
