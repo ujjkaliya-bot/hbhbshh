@@ -941,6 +941,91 @@ class ClusterManager:
         finally:
             client.close()
 
+    # -- crash recovery ---------------------------------------------------- #
+    def discover_bots(self) -> list[dict]:
+        """
+        Rebuild the bot registry from the servers themselves.
+
+        On Render the SQLite DB lives on ephemeral storage, so a redeploy wipes
+        the ``hosted_bots`` table even though every bot is still running happily
+        on its Selfhost box. This walks ``REMOTE_ROOT`` on every active server and
+        returns one row per ``<owner_id>/<bot_id>`` directory found — fully
+        deterministic, no AI involved. Existing DB rows win; only unknown bots
+        are added back.
+        """
+        found: list[dict] = []
+        known = {b["bot_id"] for b in db.list_all_bots()}
+        for server in db.list_servers(active_only=True):
+            try:
+                client = _connect(server)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("discover_bots: %s unreachable: %s", server["server_id"], exc)
+                continue
+            try:
+                root = shlex.quote(REMOTE_ROOT)
+                # owner_id/bot_id directory pairs, two levels under REMOTE_ROOT.
+                _, out, _ = run_command(
+                    client,
+                    f"find {root} -mindepth 2 -maxdepth 2 -type d 2>/dev/null",
+                    timeout=30)
+                for line in out.splitlines():
+                    path = line.strip()
+                    if not path:
+                        continue
+                    parts = path.rstrip("/").split("/")
+                    if len(parts) < 2:
+                        continue
+                    bot_id, owner_raw = parts[-1], parts[-2]
+                    if bot_id in known:
+                        continue
+                    try:
+                        owner_id = int(owner_raw)
+                    except ValueError:
+                        continue
+                    language = self._detect_language(client, path)
+                    found.append({"bot_id": bot_id, "owner_id": owner_id,
+                                  "server_id": server["server_id"],
+                                  "remote_path": path, "language": language})
+            finally:
+                client.close()
+        return found
+
+    @staticmethod
+    def _detect_language(client: paramiko.SSHClient, path: str) -> str:
+        """Guess python/node from the files present in a bot directory."""
+        q = shlex.quote(path)
+        _, out, _ = run_command(
+            client,
+            f"ls {q}/src 2>/dev/null; ls {q} 2>/dev/null",
+            timeout=20)
+        listing = out or ""
+        if "index.js" in listing or "package.json" in listing:
+            return "node"
+        return "python"
+
+    def recover_bots(self) -> dict:
+        """Re-register bots found on the servers after an ephemeral-DB wipe."""
+        try:
+            found = self.discover_bots()
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc), "recovered": 0}
+        recovered = 0
+        for b in found:
+            try:
+                # hosted_bots.owner_id is a FK to users, and the users table was
+                # wiped by the same redeploy — recreate the row before inserting.
+                db.ensure_user(b["owner_id"])
+                db.add_bot(b["bot_id"], b["owner_id"], b["server_id"],
+                           name=b["bot_id"], language=b["language"],
+                           remote_path=b["remote_path"], status="running")
+                recovered += 1
+            except Exception as exc:  # noqa: BLE001 - skip duplicates/races
+                log.warning("recover_bots: skip %s: %s", b.get("bot_id"), exc)
+        if recovered:
+            log.info("recovered %d bot(s) from servers", recovered)
+        return {"ok": True, "recovered": recovered,
+                "bots": [b["bot_id"] for b in found]}
+
     def restart_bot(self, bot_id: str) -> dict:
         bot = db.get_bot(bot_id)
         if not bot or not bot.get("server_id"):

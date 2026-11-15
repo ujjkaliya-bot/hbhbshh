@@ -367,6 +367,21 @@ STRINGS: dict[str, dict[str, str]] = {
         LANG_HI: "🩺 AI से ठीक कराने के लिए बॉट चुनें:",
         LANG_HINGLISH: "🩺 AI se fix karane ke liye bot chuno:",
     },
+    "choose_bot_pkgs": {
+        LANG_EN: "📦 Choose a bot to install packages on:",
+        LANG_HI: "📦 पैकेज इंस्टॉल करने के लिए बॉट चुनें:",
+        LANG_HINGLISH: "📦 Packages install karne ke liye bot chuno:",
+    },
+    "choose_bot_live": {
+        LANG_EN: "📡 Choose a bot to watch live logs:",
+        LANG_HI: "📡 लाइव लॉग देखने के लिए बॉट चुनें:",
+        LANG_HINGLISH: "📡 Live logs dekhne ke liye bot chuno:",
+    },
+    "recovered_bots": {
+        LANG_EN: "♻️ Recovered {count} bot(s) from the servers after a restart.",
+        LANG_HI: "♻️ रीस्टार्ट के बाद सर्वर से {count} बॉट रिकवर हुए।",
+        LANG_HINGLISH: "♻️ Restart ke baad server se {count} bot recover hue.",
+    },
     "no_bots_found": {
         LANG_EN: "📂 No bots found. Build or host one first!",
         LANG_HI: "📂 कोई बॉट नहीं मिला। पहले एक बनाएँ या होस्ट करें!",

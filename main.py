@@ -172,6 +172,8 @@ def main_menu_kb(lang: str | None = None) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(t("btn_build_ai", lang), callback_data="menu:aibuild")],
         [InlineKeyboardButton(t("btn_host_zip", lang), callback_data="menu:host")],
         [InlineKeyboardButton(t("btn_my_bots", lang), callback_data="menu:bots")],
+        [InlineKeyboardButton(t("btn_packages", lang), callback_data="menu:packages"),
+         InlineKeyboardButton(t("btn_live", lang), callback_data="menu:livelogs")],
         [InlineKeyboardButton(t("btn_autofix", lang), callback_data="menu:fixer")],
         [InlineKeyboardButton(t("btn_help", lang), callback_data="menu:help")],
     ])
@@ -290,6 +292,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await _show_bots(query, user.id)
         elif data == "menu:logs":
             await _show_pick_bot(query, user.id, "logs", t("choose_bot_logs", lang))
+        elif data == "menu:packages":
+            await _show_pick_bot(query, user.id, "pkgs", t("choose_bot_pkgs", lang))
+        elif data == "menu:livelogs":
+            await _show_pick_bot(query, user.id, "live", t("choose_bot_live", lang))
         elif data == "menu:fixer":
             await _show_pick_bot(query, user.id, "fix", t("choose_bot_fix", lang))
         elif data == "menu:help":
@@ -1347,6 +1353,14 @@ async def _post_init(app: Application) -> None:
         log.info("=" * 68)
         loaded = await asyncio.to_thread(cm.reload_from_json)
         log.info("servers loaded from servers.json: %s", loaded)
+        # On Render the DB is ephemeral, so re-register bots that are still
+        # running on the Selfhost boxes even though the table was wiped.
+        try:
+            rec = await asyncio.to_thread(cm.recover_bots)
+            if rec.get("recovered"):
+                log.info("recovered bots after restart: %s", rec.get("bots"))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("bot recovery failed: %s", exc)
         log.info("AI configured: %s", ai_coder_agent.is_configured())
         if ADMIN_USER_ID and is_ephemeral_key():
             await _notify_ephemeral_key(app, pub)

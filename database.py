@@ -204,7 +204,7 @@ def add_bot(bot_id: str, owner_id: int, server_id: str, name: str,
             "INSERT INTO hosted_bots "
             "(bot_id, owner_id, server_id, name, language, status, remote_path) "
             "VALUES (?,?,?,?,?,?,?)",
-            (bot_id, owner_id, server_id, name, language, remote_path, status),
+            (bot_id, owner_id, server_id, name, language, status, remote_path),
         )
     return get_bot(bot_id)
 
