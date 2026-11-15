@@ -97,6 +97,28 @@ The bot mirrors whatever language the user writes in.
 5. `_chat_json()` retries once on unparseable JSON, feeding the partial reply
    back and asking for a more concise complete object.
 
+## Manual packages + live logs (added for "AI ke bharose nahi" requests)
+Two features exist so a user never has to rely on the AI to fix a missing
+dependency or to guess what a bot is doing:
+
+* **📦 Packages** (`cluster_manager.install_packages`): user types package names
+  and we run `pip install` into the bot's `../.venv` (or `npm install` inside
+  `src/` for Node) then restart. This is the *manual* path — **no AI call at all**.
+  * `_validate_packages()` in `cluster_manager.py` accepts only PEP-508-ish
+    specifiers (`name`, `name[extra]`, `name>=1.2`, `@scope/pkg@1.2.3`). Shell
+    metacharacters are rejected *before* the command is built, so a typo cannot
+    inject a command. `MAX_PACKAGES_PER_REQUEST = 20`.
+  * Returns `{"ok", "installed", "rejected", "output", "restart"}`.
+* **📡 Live Logs** (`cluster_manager.get_logs_since` + `main._run_live_logs`):
+  `get_logs_since(bot_id, offset)` does `stat -c %s` + `tail -c +N` so each poll
+  returns only *new* bytes (offset==0 seeds from `size - max_bytes`). The viewer
+  edits one Telegram message in place, bounded by `LIVE_LOG_TICKS` (default 24)
+  at `LIVE_LOG_INTERVAL` (default 5s) so a forgotten window can never spam SSH.
+  🔄 Refresh restarts the window; ⏹ Stop Live falls back to the static 📊 view.
+
+State: `S_AWAITING_PKGS` + `session()["pkg_bot"]`; `_clear_transient_state()`
+drops it when the user taps ⬅️ Back so a stray message is not eaten by the flow.
+
 ## Bot flow ("Build a New Bot with AI")
 `main.py` session state machine: `awaiting_ai_prompt` → `clarifying` (one
 question per turn via `ai_coder_agent.clarify_bot()`) → `confirm_build` →

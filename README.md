@@ -119,6 +119,12 @@ Repo-root deploy files: `render.yaml` (Render blueprint), `Procfile`,
   `security_scanner` verifies → auto-deploys 24/7 on the cluster.
 - **📦 Host a ZIP Upload** — send a `.zip` → auto-extract, install deps, run 24/7.
 - **📂 My Bots & Live Logs** — start, stop, restart, view logs, delete.
+  - **📡 Live Logs** — a live view that refreshes itself every 5s for ~2 minutes
+    (tap 🔄 Refresh to keep watching). Great for watching a bot boot in real time.
+  - **📦 Packages** — install extra packages by hand, **no AI involved**. Type
+    `requests aiohttp` (or `python-telegram-bot>=20 openai`) and the bot runs
+    `pip install` into the bot's venv (or `npm install` for Node) and restarts it.
+    Invalid names are rejected before anything reaches the server.
 - **🩺 AI Auto-Fix (Repair Errors)** — reads crash logs + code, patches the bug
   automatically, restarts the bot.
 - **💬 24/7 AI Coding Help** — chat with the agent for code edits or help. Replies

@@ -71,6 +71,11 @@ ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", "0") or 0)
 WATCHDOG_INTERVAL = int(os.environ.get("WATCHDOG_INTERVAL", "60"))
 MAX_CLARIFY_QUESTIONS = int(os.environ.get("MAX_CLARIFY_QUESTIONS", "6"))
 
+# Live-log viewer: edit in place every few seconds, bounded so a forgotten
+# window cannot hammer the SSH server forever.
+LIVE_LOG_INTERVAL = float(os.environ.get("LIVE_LOG_INTERVAL", "5"))
+LIVE_LOG_TICKS = int(os.environ.get("LIVE_LOG_TICKS", "24"))  # ~2 min at 5s
+
 
 def _default_downloads_dir() -> str:
     here = os.path.dirname(os.path.abspath(__file__))
@@ -101,6 +106,7 @@ S_AI_CLARIFY = "clarifying"
 S_AI_CONFIRM = "confirm_build"
 S_AWAITING_ZIP = "awaiting_zip"
 S_AI_CHAT = "ai_chat"
+S_AWAITING_PKGS = "awaiting_packages"
 
 
 def session(user_id: int) -> dict:
@@ -292,6 +298,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 t("ai_chat_on", lang), parse_mode=ParseMode.HTML)
         elif data.startswith("logs:"):
             await _show_logs(query, user.id, data.split(":", 1)[1])
+        elif data.startswith("live:"):
+            await _start_live_logs(query, user.id, data.split(":", 1)[1])
+        elif data.startswith("pkgs:"):
+            await _ask_packages(query, user.id, data.split(":", 1)[1])
+        elif data.startswith("refresh:"):
+            await _refresh_logs(query, user.id, data.split(":", 1)[1])
         elif data.startswith("fix:"):
             await _ai_fix(query, user.id, data.split(":", 1)[1])
         elif data.startswith("apply:"):
@@ -309,10 +321,18 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def _show_home(query, lang: str | None = None) -> None:
+    _clear_transient_state(query.from_user.id)
     await query.edit_message_text(
         t("dashboard", lang), parse_mode=ParseMode.HTML,
         reply_markup=main_menu_kb(lang),
     )
+
+
+def _clear_transient_state(user_id: int) -> None:
+    """Drop one-shot input states when the user navigates away via a button."""
+    sess = session(user_id)
+    if sess.get("state") == S_AWAITING_PKGS:
+        sess["state"] = None
 
 
 async def _show_ai_lang(query, lang: str | None = None) -> None:
@@ -402,6 +422,10 @@ async def _show_bots(query, user_id: int) -> None:
         ])
         kb_rows.append([
             InlineKeyboardButton(t("btn_restart", lang), callback_data=f"restart:{b['bot_id']}"),
+            InlineKeyboardButton(t("btn_live", lang)[:20], callback_data=f"live:{b['bot_id']}"),
+        ])
+        kb_rows.append([
+            InlineKeyboardButton(t("btn_packages", lang)[:20], callback_data=f"pkgs:{b['bot_id']}"),
             InlineKeyboardButton("⏹ Stop", callback_data=f"stopbot:{b['bot_id']}"),
             InlineKeyboardButton("🗑 Delete", callback_data=f"del:{b['bot_id']}"),
         ])
@@ -443,11 +467,145 @@ async def _show_logs(query, user_id: int, bot_id: str) -> None:
         f"<b>{t('last_logs', lang)}</b>\n<pre>{esc(logs[-3000:])}</pre>"
     )
     kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(t("btn_live", lang)[:24], callback_data=f"live:{bot_id}"),
+         InlineKeyboardButton(t("btn_refresh", lang)[:24], callback_data=f"logs:{bot_id}")],
+        [InlineKeyboardButton(t("btn_packages", lang)[:24], callback_data=f"pkgs:{bot_id}")],
         [InlineKeyboardButton(t("btn_ai_autofix", lang), callback_data=f"fix:{bot_id}"),
          InlineKeyboardButton(t("btn_restart", lang), callback_data=f"restart:{bot_id}")],
         [InlineKeyboardButton(t("btn_back", lang), callback_data="menu:bots")],
     ])
     await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+
+
+async def _start_live_logs(query, user_id: int, bot_id: str) -> None:
+    """Bounded auto-refreshing log viewer (no SSH spam, auto-stops)."""
+    lang = user_lang(user_id)
+    bot = db.get_bot(bot_id)
+    if not bot or bot["owner_id"] != user_id:
+        await query.edit_message_text(t("not_yours", lang))
+        return
+    await _run_live_logs(query, user_id, bot, lang, offset=0, ticks=LIVE_LOG_TICKS)
+
+
+async def _refresh_logs(query, user_id: int, bot_id: str) -> None:
+    lang = user_lang(user_id)
+    bot = db.get_bot(bot_id)
+    if not bot or bot["owner_id"] != user_id:
+        await query.edit_message_text(t("not_yours", lang))
+        return
+    await _run_live_logs(query, user_id, bot, lang, offset=0, ticks=LIVE_LOG_TICKS)
+
+
+def _live_kb(bot_id: str, lang: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(t("btn_refresh", lang)[:24], callback_data=f"refresh:{bot_id}"),
+         InlineKeyboardButton(t("btn_live_stop", lang)[:24], callback_data=f"logs:{bot_id}")],
+        [InlineKeyboardButton(t("btn_packages", lang)[:24], callback_data=f"pkgs:{bot_id}")],
+        [InlineKeyboardButton(t("btn_back", lang), callback_data="menu:bots")],
+    ])
+
+
+async def _run_live_logs(query, user_id: int, bot: dict, lang: str,
+                         offset: int, ticks: int) -> None:
+    """
+    Poll ``bot.log`` for new bytes and edit the message in place.
+
+    ``ticks`` bounds how long we keep refreshing, so a forgotten window can
+    never hammer the server forever. The user can tap 🔄 Refresh to extend.
+    """
+    name = bot["name"]
+    last_text = ""
+    cursor = offset
+    for tick in range(max(1, ticks)):
+        res = await asyncio.to_thread(cm.get_logs_since, bot["bot_id"], cursor, 3500)
+        if res.get("error"):
+            await query.edit_message_text(
+                f"⚠️ {esc_trunc(res['error'], 300)}", parse_mode=ParseMode.HTML,
+                reply_markup=_live_kb(bot["bot_id"], lang))
+            return
+        new = res.get("text") or ""
+        cursor = int(res.get("offset") or cursor)
+        if new:
+            last_text = (last_text + new)[-3500:]
+        body = last_text or t("live_logs_waiting", lang)
+        header = t("live_logs_title", lang, name=esc(name))
+        hint = t("live_logs_hint", lang)
+        text = f"{header}\n<i>{esc(hint)}</i>\n\n<pre>{esc(body[-3000:])}</pre>"
+        try:
+            await query.edit_message_text(
+                text, parse_mode=ParseMode.HTML,
+                reply_markup=_live_kb(bot["bot_id"], lang))
+        except TelegramError as exc:
+            # "message is not modified" is expected when nothing changed.
+            if "not modified" not in str(exc).lower():
+                log.warning("live logs edit failed: %s", exc)
+        if tick < ticks - 1:
+            await asyncio.sleep(LIVE_LOG_INTERVAL)
+    # Final tick: leave the refresh button so the user can continue.
+    await query.edit_message_text(
+        f"{t('live_logs_title', lang, name=esc(name))}\n\n"
+        f"<pre>{esc((last_text or t('live_logs_waiting', lang))[-3000:])}</pre>",
+        parse_mode=ParseMode.HTML, reply_markup=_live_kb(bot["bot_id"], lang))
+
+
+async def _ask_packages(query, user_id: int, bot_id: str) -> None:
+    """Manual (non-AI) package install: ask the user which packages to add."""
+    lang = user_lang(user_id)
+    bot = db.get_bot(bot_id)
+    if not bot or bot["owner_id"] != user_id:
+        await query.edit_message_text(t("not_yours", lang))
+        return
+    session(user_id)["state"] = S_AWAITING_PKGS
+    session(user_id)["pkg_bot"] = bot_id
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(t("btn_back", lang), callback_data=f"logs:{bot_id}")],
+    ])
+    await query.edit_message_text(
+        t("pkg_prompt", lang, name=esc(bot["name"])),
+        parse_mode=ParseMode.HTML, reply_markup=kb)
+
+
+def _parse_packages(text: str) -> list[str]:
+    """Split free-form input into package tokens (space / comma / newline)."""
+    return [p for p in re.split(r"[\s,]+", (text or "").strip()) if p]
+
+
+async def _install_packages(message, user_id: int, bot_id: str, raw: str) -> None:
+    lang = user_lang(user_id)
+    bot = db.get_bot(bot_id)
+    if not bot or bot["owner_id"] != user_id:
+        await message.reply_text(t("not_yours", lang))
+        return
+    pkgs = _parse_packages(raw)
+    if not pkgs:
+        await message.reply_text(t("pkg_none", lang), parse_mode=ParseMode.HTML)
+        return
+    pretty = " ".join(pkgs)
+    status = await message.reply_text(
+        t("pkg_installing", lang, pkgs=esc(pretty)), parse_mode=ParseMode.HTML)
+    res = await asyncio.to_thread(cm.install_packages, bot_id, pkgs, True)
+    if not res.get("ok"):
+        err = res.get("error") or "unknown error"
+        await status.edit_text(
+            t("pkg_failed", lang, error=esc_trunc(err, 1500)),
+            parse_mode=ParseMode.HTML, reply_markup=back_kb(lang))
+        return
+    installed = " ".join(res.get("installed") or pkgs)
+    parts = [t("pkg_done", lang, pkgs=esc(installed),
+                restart=t("pkg_restarted", lang) if res.get("restart") == "restarted"
+                else "")]
+    rejected = res.get("rejected") or []
+    if rejected:
+        parts.append(t("pkg_rejected", lang, names=esc(" ".join(rejected))))
+    output = (res.get("output") or "").strip()
+    if output:
+        parts.append(t("pkg_output", lang, output=esc_trunc(output, 1200)))
+    await status.edit_text(
+        "\n\n".join(parts), parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton(t("btn_live", lang)[:24], callback_data=f"live:{bot_id}"),
+             InlineKeyboardButton(t("btn_back", lang), callback_data="menu:bots")],
+        ]))
 
 
 async def _ai_fix(query, user_id: int, bot_id: str) -> None:
@@ -856,6 +1014,15 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             sess["idea"] = (sess.get("idea") or "") + "\n" + text
         await update.message.chat.send_action("typing")
         await _ai_design_turn(update.message, user.id)
+        return
+
+    if state == S_AWAITING_PKGS:
+        bot_id = sess.get("pkg_bot")
+        sess["state"] = None
+        if not bot_id:
+            await update.message.reply_text(t("no_bots_found", lang), reply_markup=main_menu_kb(lang))
+            return
+        await _install_packages(update.message, user.id, bot_id, text)
         return
 
     if state == S_AI_CONFIRM:

@@ -42,6 +42,11 @@ services:
         value: reflection/beam-free
       - key: WATCHDOG_INTERVAL
         value: "60"
+      # Live-log viewer cadence (24 × 5s ≈ 2 minutes, then it stops itself).
+      - key: LIVE_LOG_INTERVAL
+        value: "5"
+      - key: LIVE_LOG_TICKS
+        value: "24"
       # Optional: paste the cluster ED25519 private key (raw or base64) so the
       # bot can SSH into your Selfhost servers from Render. Leave unset to let
       # the bot generate a fresh key (then read it via /pubkey).

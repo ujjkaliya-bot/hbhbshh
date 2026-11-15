@@ -80,6 +80,26 @@ STRINGS: dict[str, dict[str, str]] = {
         LANG_HI: "🔁 रीस्टार्ट",
         LANG_HINGLISH: "🔁 Restart",
     },
+    "btn_packages": {
+        LANG_EN: "📦 Packages",
+        LANG_HI: "📦 पैकेज",
+        LANG_HINGLISH: "📦 Packages",
+    },
+    "btn_live": {
+        LANG_EN: "📡 Live Logs",
+        LANG_HI: "📡 लाइव लॉग",
+        LANG_HINGLISH: "📡 Live Logs",
+    },
+    "btn_refresh": {
+        LANG_EN: "🔄 Refresh",
+        LANG_HI: "🔄 रिफ्रेश",
+        LANG_HINGLISH: "🔄 Refresh",
+    },
+    "btn_live_stop": {
+        LANG_EN: "⏹ Stop Live",
+        LANG_HI: "⏹ लाइव बंद करें",
+        LANG_HINGLISH: "⏹ Live band karo",
+    },
     "btn_apply": {
         LANG_EN: "🛠 Auto-Apply & Restart",
         LANG_HI: "🛠 ऑटो-अप्लाई और रीस्टार्ट",
@@ -377,6 +397,84 @@ STRINGS: dict[str, dict[str, str]] = {
         LANG_EN: "Last 40 log lines:",
         LANG_HI: "आखिरी 40 लॉग लाइनें:",
         LANG_HINGLISH: "Aakhri 40 log lines:",
+    },
+    "live_logs_title": {
+        LANG_EN: "📡 <b>Live Logs</b> — {name}",
+        LANG_HI: "📡 <b>लाइव लॉग</b> — {name}",
+        LANG_HINGLISH: "📡 <b>Live Logs</b> — {name}",
+    },
+    "live_logs_hint": {
+        LANG_EN: ("Updates every 5s for ~2 minutes. "
+                  "Tap 🔄 Refresh to keep watching, or ⏹ Stop Live to finish."),
+        LANG_HI: ("हर 5 सेकंड में अपडेट, ~2 मिनट तक। "
+                  "देखते रहने के लिए 🔄 रिफ्रेश दबाएँ, या ⏹ लाइव बंद करें।"),
+        LANG_HINGLISH: ("Har 5s update, ~2 minute tak. "
+                        "Dekhte rehne ke liye 🔄 Refresh dabao, ya ⏹ Live band karo."),
+    },
+    "live_logs_waiting": {
+        LANG_EN: "(waiting for output…)",
+        LANG_HI: "(आउटपुट का इंतज़ार…)",
+        LANG_HINGLISH: "(output ka intezaar…)",
+    },
+    "live_logs_stopped": {
+        LANG_EN: "⏹ Live log stopped. Tap 📊 to fetch logs again.",
+        LANG_HI: "⏹ लाइव लॉग बंद। दोबारा देखने के लिए 📊 दबाएँ।",
+        LANG_HINGLISH: "⏹ Live log band. Dobara dekhne ke liye 📊 dabao.",
+    },
+    "pkg_prompt": {
+        LANG_EN: ("📦 <b>Install packages</b> for <b>{name}</b>\n\n"
+                  "Send the package names, space or comma separated.\n"
+                  "Examples:\n"
+                  "<code>requests aiohttp</code>\n"
+                  "<code>python-telegram-bot&gt;=20 openai</code>\n\n"
+                  "They are installed directly (no AI) and the bot is restarted."),
+        LANG_HI: ("📦 <b>{name}</b> के लिए पैकेज इंस्टॉल करें\n\n"
+                  "पैकेज के नाम भेजें — स्पेस या कॉमा से अलग करके।\n"
+                  "उदाहरण:\n"
+                  "<code>requests aiohttp</code>\n"
+                  "<code>python-telegram-bot&gt;=20 openai</code>\n\n"
+                  "ये सीधे इंस्टॉल होंगे (AI के बिना) और बॉट रीस्टार्ट होगा।"),
+        LANG_HINGLISH: ("📦 <b>{name}</b> ke liye packages install karo\n\n"
+                        "Package names bhejo — space ya comma se alag karke.\n"
+                        "Examples:\n"
+                        "<code>requests aiohttp</code>\n"
+                        "<code>python-telegram-bot&gt;=20 openai</code>\n\n"
+                        "Ye seedha install honge (AI ke bina) aur bot restart hoga."),
+    },
+    "pkg_installing": {
+        LANG_EN: "📦 Installing: <code>{pkgs}</code>… this can take up to a minute.",
+        LANG_HI: "📦 इंस्टॉल हो रहा है: <code>{pkgs}</code>… एक मिनट तक लग सकता है।",
+        LANG_HINGLISH: "📦 Install ho raha hai: <code>{pkgs}</code>… ek minute tak lag sakta hai.",
+    },
+    "pkg_done": {
+        LANG_EN: "✅ <b>Installed:</b> <code>{pkgs}</code>\n\n{restart}",
+        LANG_HI: "✅ <b>इंस्टॉल हुआ:</b> <code>{pkgs}</code>\n\n{restart}",
+        LANG_HINGLISH: "✅ <b>Install hua:</b> <code>{pkgs}</code>\n\n{restart}",
+    },
+    "pkg_restarted": {
+        LANG_EN: "🔁 Bot restarted so the new packages are loaded.",
+        LANG_HI: "🔁 नए पैकेज लोड करने के लिए बॉट रीस्टार्ट हो गया।",
+        LANG_HINGLISH: "🔁 Naye packages load karne ke liye bot restart ho gaya.",
+    },
+    "pkg_failed": {
+        LANG_EN: "❌ <b>Install failed.</b>\n\n<pre>{error}</pre>",
+        LANG_HI: "❌ <b>इंस्टॉल फेल हुआ।</b>\n\n<pre>{error}</pre>",
+        LANG_HINGLISH: "❌ <b>Install fail hua.</b>\n\n<pre>{error}</pre>",
+    },
+    "pkg_rejected": {
+        LANG_EN: "⚠️ Ignored invalid names: <code>{names}</code>",
+        LANG_HI: "⚠️ अमान्य नाम छोड़ दिए: <code>{names}</code>",
+        LANG_HINGLISH: "⚠️ Invalid naam chhod diye: <code>{names}</code>",
+    },
+    "pkg_none": {
+        LANG_EN: "⚠️ No valid package names found. Try e.g. <code>requests aiohttp</code>.",
+        LANG_HI: "⚠️ कोई मान्य पैकेज नाम नहीं मिला। जैसे <code>requests aiohttp</code> भेजें।",
+        LANG_HINGLISH: "⚠️ Koi valid package naam nahi mila. Jaise <code>requests aiohttp</code> bhejo.",
+    },
+    "pkg_output": {
+        LANG_EN: "<b>Output:</b>\n<pre>{output}</pre>",
+        LANG_HI: "<b>आउटपुट:</b>\n<pre>{output}</pre>",
+        LANG_HINGLISH: "<b>Output:</b>\n<pre>{output}</pre>",
     },
     "running": {LANG_EN: "RUNNING", LANG_HI: "चल रहा है", LANG_HINGLISH: "RUNNING"},
     "stopped": {LANG_EN: "STOPPED", LANG_HI: "बंद है", LANG_HINGLISH: "STOPPED"},

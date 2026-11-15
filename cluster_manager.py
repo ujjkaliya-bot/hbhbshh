@@ -24,6 +24,7 @@ import hashlib
 import logging
 import os
 import posixpath
+import re
 import shlex
 import stat
 import zipfile
@@ -378,6 +379,34 @@ def run_command(client: paramiko.SSHClient, command: str, timeout: int = 120) ->
     err = stderr.read().decode("utf-8", "replace")
     code = stdout.channel.recv_exit_status()
     return code, out, err
+
+
+# Package specifiers we accept: a PEP 508-ish name plus optional extras and an
+# optional version comparator, e.g. "python-telegram-bot", "aiohttp>=3.9",
+# "requests[socks]==2.31.0", "@scope/pkg@1.2.3" (npm). Anything with a shell
+# metacharacter is rejected outright.
+_PKG_RE = re.compile(r"^@?[A-Za-z0-9][A-Za-z0-9._+/-]{0,63}"
+                     r"(?:\[[A-Za-z0-9._,+-]{1,64}\])?"
+                     r"(?:(?:==|>=|<=|~=|!=|>|<|@)[A-Za-z0-9._+*!,<>=-]{1,40})?$")
+MAX_PACKAGES_PER_REQUEST = 20
+
+
+def _validate_packages(packages: list[str]) -> tuple[list[str], list[str]]:
+    """Split user input into (accepted, rejected) package specifiers."""
+    cleaned: list[str] = []
+    rejected: list[str] = []
+    for raw in packages:
+        name = (raw or "").strip().strip(",")
+        if not name:
+            continue
+        if len(name) > 128 or not _PKG_RE.match(name):
+            rejected.append(name)
+            continue
+        if name not in cleaned:
+            cleaned.append(name)
+        if len(cleaned) >= MAX_PACKAGES_PER_REQUEST:
+            break
+    return cleaned, rejected
 
 
 # --------------------------------------------------------------------------- #
@@ -766,6 +795,49 @@ class ClusterManager:
         finally:
             client.close()
 
+    def get_logs_since(self, bot_id: str, offset: int, max_bytes: int = 3500) -> dict:
+        """
+        Incremental read for the live-log viewer.
+
+        Returns ``{"text": <new bytes>, "offset": <new byte offset>}``. The first
+        call (``offset == 0``) seeds the cursor at the end minus ``max_bytes`` so
+        the user sees recent history, then every later call returns only what was
+        appended since — cheap enough to poll a few times per second.
+        """
+        bot = db.get_bot(bot_id)
+        if not bot or not bot.get("server_id"):
+            return {"text": "", "offset": offset, "error": "bot/server not found"}
+        server = db.get_server(bot["server_id"])
+        if not server:
+            return {"text": "", "offset": offset, "error": "server not found"}
+        try:
+            client = _connect(server)
+        except Exception as exc:  # noqa: BLE001
+            return {"text": "", "offset": offset, "error": f"ssh error: {exc}"}
+        log_path = posixpath.join(bot["remote_path"], "bot.log")
+        try:
+            q = shlex.quote(log_path)
+            # Size of the log right now (0 if it does not exist yet).
+            _, size_out, _ = run_command(
+                client, f"stat -c %s {q} 2>/dev/null || echo 0", timeout=20)
+            try:
+                size = int((size_out or "0").strip() or 0)
+            except ValueError:
+                size = 0
+            start = int(offset)
+            if start <= 0 or start > size:
+                start = max(0, size - int(max_bytes))
+            if size <= start:
+                return {"text": "", "offset": start, "size": size}
+            _, out, err = run_command(
+                client,
+                f"tail -c +{start + 1} {q} | head -c {int(max_bytes)} 2>&1",
+                timeout=30)
+            text = out or err or ""
+            return {"text": text, "offset": start + len(text.encode("utf-8")), "size": size}
+        finally:
+            client.close()
+
     def get_source(self, bot_id: str, max_bytes: int = 40000) -> str:
         """Return the primary source file of a bot (for the AI code doctor)."""
         bot = db.get_bot(bot_id)
@@ -789,6 +861,83 @@ class ClusterManager:
                 if out.strip():
                     return f"# === {rel} ===\n{out}"
             return ""
+        finally:
+            client.close()
+
+    def install_packages(self, bot_id: str, packages: list[str],
+                         restart: bool = True) -> dict:
+        """
+        Install extra packages into an already-deployed bot, on demand.
+
+        This is the *manual* counterpart to the AI auto-fix: the user names the
+        exact packages and we install them straight away — no AI involvement.
+
+        Python bots: ``pip install`` into the bot's existing ``../.venv``.
+        Node bots:   ``npm install`` inside the bot's ``src`` directory.
+
+        Packages are validated (name + optional version specifier) so a typo
+        cannot smuggle shell metacharacters into the remote command. The bot is
+        restarted afterwards so the new dependency is actually loaded.
+        """
+        bot = db.get_bot(bot_id)
+        if not bot or not bot.get("server_id"):
+            return {"ok": False, "error": "bot/server not found"}
+
+        cleaned, rejected = _validate_packages(packages)
+        if not cleaned:
+            return {"ok": False, "error": "Koi valid package name nahi mila.",
+                    "rejected": rejected}
+
+        server = db.get_server(bot["server_id"])
+        if not server:
+            return {"ok": False, "error": "server not found"}
+
+        try:
+            client = _connect(server)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": f"ssh: {exc}"}
+
+        remote_path = bot["remote_path"]
+        q = shlex.quote(remote_path)
+        args = " ".join(shlex.quote(p) for p in cleaned)
+        language = (bot.get("language") or "python").lower()
+        try:
+            if language == "node":
+                cmd = (
+                    f"set -e; cd {q}; "
+                    "[ -d src ] && cd src; "
+                    "command -v npm >/dev/null 2>&1 || "
+                    "(apt-get update -qq && apt-get install -y -qq nodejs npm); "
+                    f"npm install --omit=dev --no-audit --no-fund {args} 2>&1 | tail -n 60"
+                )
+            else:
+                cmd = (
+                    f"set -e; cd {q}; "
+                    "if [ ! -x .venv/bin/pip ]; then "
+                    "command -v python3 >/dev/null 2>&1 || "
+                    "(apt-get update -qq && apt-get install -y -qq python3 python3-venv python3-pip); "
+                    "python3 -m venv .venv; fi; "
+                    ". .venv/bin/activate; "
+                    "python -m pip install --upgrade pip -q; "
+                    f"pip install {args} 2>&1 | tail -n 60"
+                )
+            code, out, err = run_command(client, cmd, timeout=600)
+            output = (out or err or "").strip()
+            if code != 0:
+                return {"ok": False, "error": output[-900:] or f"exit {code}",
+                        "installed": cleaned, "rejected": rejected}
+            restart_info = ""
+            if restart:
+                rc, rout, rerr = self._start_process(client, remote_path, language)
+                if rc == 0:
+                    db.update_bot_status(bot_id, "running")
+                    restart_info = "restarted"
+                else:
+                    restart_info = (rerr or rout or "")[-300:]
+            return {"ok": True, "installed": cleaned, "rejected": rejected,
+                    "output": output[-900:], "restart": restart_info}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc), "installed": cleaned}
         finally:
             client.close()
 
